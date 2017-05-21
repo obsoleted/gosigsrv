@@ -143,7 +143,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 			// Also notify these peers that the new one exists
 			if len(pInfo.Channel) < cap(pInfo.Channel) {
-				pInfo.Channel <- peerMsg{peerInfo.ID, peerInfoString}
+				pInfo.Channel <- peerMsg{pInfo.ID, peerInfoString}
 			} else {
 				// TODO: Figure out what to do when peeer message buffer fills up
 			}
