@@ -75,11 +75,19 @@ func addCorsHeaders(header http.Header) {
 	header.Set("Access-Control-Expose-Headers", strings.Join([]string{"Content-Length", "X-Peer-Id"}, ","))
 }
 
+func addPragmaHeader(header http.Header, peerID string) {
+	header.Set("Pragma", peerID)
+}
+
+func addCommonHeaders(header http.Header, closeConnection bool) {
+	setConnectionHeader(header, closeConnection)
+	setNoCacheHeader(header)
+	setVersionHeader(header)
+	addCorsHeaders(header)
+}
+
 func signinHandler(res http.ResponseWriter, req *http.Request) {
-	setConnectionHeader(res.Header(), true)
-	setNoCacheHeader(res.Header())
-	setVersionHeader(res.Header())
-	addCorsHeaders(res.Header())
+	addCommonHeaders(res.Header(), true)
 
 	if req.Method != "GET" {
 		http.Error(res, "Bad request", http.StatusBadRequest)
@@ -116,6 +124,8 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 	peers[peerInfo.ID] = peerInfo
 
+	addPragmaHeader(res.Header(), peerInfo.ID)
+
 	peerInfoString := fmt.Sprintf("%s,%s,1", peerInfo.Name, peerInfo.ID)
 	peerInfoString += fmt.Sprintln()
 	responseString := peerInfoString
@@ -144,10 +154,7 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Bad request", http.StatusBadRequest)
 		return
 	}
-	setConnectionHeader(res.Header(), true)
-	setNoCacheHeader(res.Header())
-	setVersionHeader(res.Header())
-	addCorsHeaders(res.Header())
+	addCommonHeaders(res.Header(), true)
 	var peerID string
 	// Parse out peers id
 	for k, v := range req.URL.Query() {
@@ -160,6 +167,7 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
+	addPragmaHeader(res.Header(), peerID)
 	delete(peers, peerID)
 	res.WriteHeader(http.StatusOK)
 }
@@ -188,6 +196,8 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	addPragmaHeader(res.Header(), peerID[0])
+
 	requestData, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		http.Error(res, err.Error(), http.StatusInternalServerError)
@@ -206,10 +216,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 func waitHandler(res http.ResponseWriter, req *http.Request) {
-	setConnectionHeader(res.Header(), true)
-	setNoCacheHeader(res.Header())
-	setVersionHeader(res.Header())
-	addCorsHeaders(res.Header())
+	addCommonHeaders(res.Header(), true)
 
 	if req.Method != "GET" {
 		http.Error(res, "Bad request", http.StatusBadRequest)
@@ -230,6 +237,8 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
+
+	addPragmaHeader(res.Header(), peerID[0])
 
 	// Look up message channel for peers id
 	// Wait for message to reply
