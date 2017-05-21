@@ -23,10 +23,11 @@ type peerMsg struct {
 }
 
 type peerInfo struct {
-	Kind    peerKind
-	Name    string
-	ID      string
-	Channel chan peerMsg
+	Kind          peerKind
+	Name          string
+	ID            string
+	Channel       chan *peerMsg
+	ConnectedWith string
 }
 
 const peerIDParamName string = "peer_id"
@@ -34,7 +35,7 @@ const toParamName string = "to"
 
 const peerMessageBufferSize int = 100
 
-var peers = make(map[string]peerInfo)
+var peers = make(map[string]*peerInfo)
 
 var peerIDCount uint
 var peerMutex sync.Mutex
@@ -127,7 +128,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 	var peerInfo peerInfo
 	peerInfo.Name = name
-	peerInfo.Channel = make(chan peerMsg, peerMessageBufferSize)
+	peerInfo.Channel = make(chan *peerMsg, peerMessageBufferSize)
 
 	// Determine peer type
 	if strings.Index(name, "renderingserver_") == 0 {
@@ -140,7 +141,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 	peerInfo.ID = fmt.Sprintf("%d", peerIDCount)
 	peerMutex.Unlock()
 
-	peers[peerInfo.ID] = peerInfo
+	peers[peerInfo.ID] = &peerInfo
 
 	setPragmaHeader(res.Header(), peerInfo.ID)
 
@@ -150,13 +151,13 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 	// Return above + current peers (filtered for oppositing type)
 	for pID, pInfo := range peers {
-		if pID != peerInfo.ID && pInfo.Kind != peerInfo.Kind {
+		if pID != peerInfo.ID && pInfo.Kind != peerInfo.Kind && pInfo.ConnectedWith == "" {
 			responseString += fmt.Sprintf("%s,%s,1", pInfo.Name, pInfo.ID)
 			responseString += fmt.Sprintln()
 
 			// Also notify these peers that the new one exists
 			if len(pInfo.Channel) < cap(pInfo.Channel) {
-				pInfo.Channel <- peerMsg{pInfo.ID, peerInfoString}
+				pInfo.Channel <- &peerMsg{pInfo.ID, peerInfoString}
 			} else {
 				fmt.Printf("WARNING: Dropped message for peer %s[%s]", pInfo.Name, pInfo.ID)
 				// TODO: Figure out what to do when peeer message buffer fills up
@@ -184,11 +185,20 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 			peerID = v[0]
 		}
 	}
+
 	peer, exists := peers[peerID]
 	if !exists {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
+
+	if peer.ConnectedWith != "" {
+		connectedPeer, connectionExists := peers[peer.ConnectedWith]
+		if connectionExists {
+			connectedPeer.ConnectedWith = ""
+		}
+	}
+
 	setPragmaHeader(res.Header(), peerID)
 	delete(peers, peerID)
 	res.WriteHeader(http.StatusOK)
@@ -213,12 +223,26 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	_, peerInfoExists := peers[peerID[0]]
+	from, peerInfoExists := peers[peerID[0]]
 	to, toInfoExists := peers[toID[0]]
 
 	if !peerInfoExists || !toInfoExists {
 		http.Error(res, "Invalid Peer or To ID", http.StatusBadRequest)
 		return
+	}
+
+	if from.ConnectedWith == "" {
+		fmt.Printf("Connecting %s with %s\n", from.ID, to.ID)
+		from.ConnectedWith = to.ID
+	}
+
+	if to.ConnectedWith == "" {
+		fmt.Printf("Connecting %s with %s\n", to.ID, from.ID)
+		to.ConnectedWith = from.ID
+	}
+
+	if from.ConnectedWith != to.ID {
+		fmt.Printf("WARNING: Peer sending message to recipient outside room\n")
 	}
 
 	setPragmaHeader(res.Header(), peerID[0])
@@ -234,7 +258,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Peer is backed up", http.StatusServiceUnavailable)
 		return
 	}
-	to.Channel <- peerMsg{peerID[0], requestString}
+	to.Channel <- &peerMsg{peerID[0], requestString}
 
 	// Send message to channel for to id
 	res.WriteHeader(http.StatusOK)
