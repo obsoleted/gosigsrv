@@ -102,6 +102,7 @@ func commonHeaderMiddleware(next http.Handler) http.Handler {
 		setNoCacheHeader(res.Header())
 		setVersionHeader(res.Header())
 		addCorsHeaders(res.Header())
+		setConnectionHeader(res.Header(), true)
 		next.ServeHTTP(res, req)
 	})
 }
