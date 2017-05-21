@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/google/uuid"
+	"sync"
 )
 
 type peerKind int
@@ -31,6 +31,9 @@ const toParamName string = "to"
 const peerMessageBufferSize int = 100
 
 var peers = make(map[string]peerInfo)
+
+var peerIDCount uint
+var peerMutex sync.Mutex
 
 func printReqHandler(res http.ResponseWriter, req *http.Request) {
 	reqDump, err := httputil.DumpRequest(req, true)
@@ -106,12 +109,10 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 	}
 
 	// Generate id
-	uuid, err := uuid.NewRandom()
-	if err != nil {
-		http.Error(res, err.Error(), http.StatusInternalServerError)
-	}
-
-	peerInfo.ID = uuid.String()
+	peerMutex.Lock()
+	peerIDCount++
+	peerInfo.ID = fmt.Sprintf("%d", peerIDCount)
+	peerMutex.Unlock()
 
 	peers[peerInfo.ID] = peerInfo
 
@@ -195,7 +196,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 	defer req.Body.Close()
 	// Look up channel for to id
 	if len(to.Channel) == cap(to.Channel) {
-		http.Error(res, "Invalid Peer or To ID", http.StatusServiceUnavailable)
+		http.Error(res, "Peer is backed up", http.StatusServiceUnavailable)
 		return
 	}
 	to.Channel <- requestString
@@ -226,7 +227,7 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 	peerInfo, peerInfoExists := peers[peerID[0]]
 
 	if !peerInfoExists {
-		http.Error(res, "Peer is backed up", http.StatusBadRequest)
+		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
 
