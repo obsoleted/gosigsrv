@@ -116,6 +116,8 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 	var name string
 	// Parse out peer name
 	for k, v := range req.URL.Query() {
+		// Pick the first query param without a value
+		//  e.g. /sign_in?notname=foo&name should pick 'name'
 		if v[0] == "" {
 			name = k
 			break
@@ -181,21 +183,20 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 	}
 	var peerID string
 	// Parse out peers id
-	for k, v := range req.URL.Query() {
-		if k == peerIDParamName {
-			peerID = v[0]
-		}
+	peerIDValues, peerIDExists := req.URL.Query()[peerIDParamName]
+	if peerIDExists {
+		peerID = peerIDValues[0]
 	}
 
 	peer, exists := peers[peerID]
-	if !exists {
+	if !exists && peer != nil {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
 
 	if peer.ConnectedWith != "" {
 		connectedPeer, connectionExists := peers[peer.ConnectedWith]
-		if connectionExists {
+		if connectionExists && connectedPeer != nil {
 			connectedPeer.ConnectedWith = ""
 		}
 	}
@@ -216,18 +217,21 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 
 	// Parse out from id
 	// Parse out to id
-	peerID, peerExists := req.URL.Query()[peerIDParamName]
-	toID, toExists := req.URL.Query()[toParamName]
+	peerIDValues, peerExists := req.URL.Query()[peerIDParamName]
+	toIDValues, toExists := req.URL.Query()[toParamName]
 
 	if !peerExists || !toExists {
 		http.Error(res, "Missing Peer or To ID", http.StatusBadRequest)
 		return
 	}
 
-	from, peerInfoExists := peers[peerID[0]]
-	to, toInfoExists := peers[toID[0]]
+	peerID := peerIDValues[0]
+	toID := toIDValues[0]
 
-	if !peerInfoExists || !toInfoExists {
+	from, peerInfoExists := peers[peerID]
+	to, toInfoExists := peers[toID]
+
+	if !peerInfoExists || !toInfoExists || from == nil || to == nil {
 		http.Error(res, "Invalid Peer or To ID", http.StatusBadRequest)
 		return
 	}
@@ -246,7 +250,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		fmt.Printf("WARNING: Peer sending message to recipient outside room\n")
 	}
 
-	setPragmaHeader(res.Header(), peerID[0])
+	setPragmaHeader(res.Header(), peerID)
 
 	requestData, err := ioutil.ReadAll(req.Body)
 	if err != nil {
@@ -259,11 +263,11 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Peer is backed up", http.StatusServiceUnavailable)
 		return
 	}
-	to.Channel <- &peerMsg{peerID[0], requestString}
+	to.Channel <- &peerMsg{peerID, requestString}
 
 	// Send message to channel for to id
 	res.WriteHeader(http.StatusOK)
-	fmt.Printf("message: %s -> %s: \n\t%s\n", peerID[0], toID[0], requestString)
+	fmt.Printf("message: %s -> %s: \n\t%s\n", peerID, toID, requestString)
 }
 
 func waitHandler(res http.ResponseWriter, req *http.Request) {
@@ -274,16 +278,18 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 	}
 
 	// Parse out peer id
-	peerID, peerExists := req.URL.Query()[peerIDParamName]
+	peerIDValues, peerExists := req.URL.Query()[peerIDParamName]
 
 	if !peerExists {
 		http.Error(res, "Missing Peer ID", http.StatusBadRequest)
 		return
 	}
 
-	peerInfo, peerInfoExists := peers[peerID[0]]
+	peerID := peerIDValues[0]
 
-	if !peerInfoExists {
+	peerInfo, peerInfoExists := peers[peerID]
+
+	if !peerInfoExists && peerInfo != nil {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
