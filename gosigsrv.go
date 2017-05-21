@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
+	"os"
 	"strings"
 
 	"github.com/google/uuid"
@@ -238,8 +239,17 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
+
 	fmt.Println("gosigsrv starting")
 	fmt.Println()
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8087"
+	}
+
+	fmt.Printf("Will listen on port %s\n\n", port)
+
 	// Register handlers
 	registerHandler("/sign_in", signinHandler)
 	registerHandler("/sign_out", signoutHandler)
@@ -248,7 +258,7 @@ func main() {
 	registerHandler("/", printReqHandler)
 
 	// Start listening
-	http.ListenAndServe(":8087", nil)
+	http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
 	fmt.Println()
 	fmt.Println("gosigsrv exiting")
 }
