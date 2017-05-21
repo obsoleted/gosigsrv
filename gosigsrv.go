@@ -1,4 +1,4 @@
-package main
+package gosigsrv
 
 import (
 	"fmt"
@@ -189,7 +189,7 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 	}
 
 	peer, exists := peers[peerID]
-	if !exists && peer != nil {
+	if !exists || peer == nil {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
@@ -289,7 +289,7 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 
 	peerInfo, peerInfoExists := peers[peerID]
 
-	if !peerInfoExists && peerInfo != nil {
+	if !peerInfoExists || peerInfo == nil {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
