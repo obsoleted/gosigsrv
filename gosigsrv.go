@@ -47,11 +47,11 @@ func printReqHandler(res http.ResponseWriter, req *http.Request) {
 	fmt.Println(string(reqDump))
 }
 
-func registerHandler(path string, handlerFunc func(http.ResponseWriter, *http.Request)) {
+func registerHandler(path string, handlerFunc http.Handler) {
 	if path != "" {
 		fmt.Printf("Registering handler for %s", path)
 		fmt.Println()
-		http.HandleFunc(path, handlerFunc)
+		http.Handle(path, handlerFunc)
 	}
 }
 
@@ -79,15 +79,8 @@ func addCorsHeaders(header http.Header) {
 	header.Set("Access-Control-Expose-Headers", strings.Join([]string{"Content-Length", "X-Peer-Id"}, ","))
 }
 
-func addPragmaHeader(header http.Header, peerID string) {
+func setPragmaHeader(header http.Header, peerID string) {
 	header.Set("Pragma", peerID)
-}
-
-func addCommonHeaders(header http.Header, closeConnection bool) {
-	setConnectionHeader(header, closeConnection)
-	setNoCacheHeader(header)
-	setVersionHeader(header)
-	addCorsHeaders(header)
 }
 
 func printStats() {
@@ -103,8 +96,16 @@ func printStats() {
 	fmt.Printf("TotalPeers: %d, Servers: %d, Clients: %d\n", len(peers), serverCount, clientCount)
 }
 
+func commonHeaderMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		setNoCacheHeader(res.Header())
+		setVersionHeader(res.Header())
+		addCorsHeaders(res.Header())
+		next.ServeHTTP(res, req)
+	})
+}
+
 func signinHandler(res http.ResponseWriter, req *http.Request) {
-	addCommonHeaders(res.Header(), true)
 
 	if req.Method != "GET" {
 		http.Error(res, "Bad request", http.StatusBadRequest)
@@ -141,7 +142,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 	peers[peerInfo.ID] = peerInfo
 
-	addPragmaHeader(res.Header(), peerInfo.ID)
+	setPragmaHeader(res.Header(), peerInfo.ID)
 
 	peerInfoString := fmt.Sprintf("%s,%s,1", peerInfo.Name, peerInfo.ID)
 	peerInfoString += fmt.Sprintln()
@@ -176,7 +177,6 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Bad request", http.StatusBadRequest)
 		return
 	}
-	addCommonHeaders(res.Header(), true)
 	var peerID string
 	// Parse out peers id
 	for k, v := range req.URL.Query() {
@@ -189,7 +189,7 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
-	addPragmaHeader(res.Header(), peerID)
+	setPragmaHeader(res.Header(), peerID)
 	delete(peers, peerID)
 	res.WriteHeader(http.StatusOK)
 
@@ -221,7 +221,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	addPragmaHeader(res.Header(), peerID[0])
+	setPragmaHeader(res.Header(), peerID[0])
 
 	requestData, err := ioutil.ReadAll(req.Body)
 	if err != nil {
@@ -242,7 +242,6 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 func waitHandler(res http.ResponseWriter, req *http.Request) {
-	addCommonHeaders(res.Header(), true)
 
 	if req.Method != "GET" {
 		http.Error(res, "Bad request", http.StatusBadRequest)
@@ -268,7 +267,7 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 	// Look up message channel for peers id
 	// Wait for message to reply
 	peerMsg := <-peerInfo.Channel
-	addPragmaHeader(res.Header(), peerMsg.FromID)
+	setPragmaHeader(res.Header(), peerMsg.FromID)
 	res.WriteHeader(http.StatusOK)
 	_, err := fmt.Fprint(res, peerMsg.Message)
 	if err != nil {
@@ -291,11 +290,11 @@ func main() {
 	fmt.Printf("Will listen on port %s\n\n", port)
 
 	// Register handlers
-	registerHandler("/sign_in", signinHandler)
-	registerHandler("/sign_out", signoutHandler)
-	registerHandler("/message", messageHandler)
-	registerHandler("/wait", waitHandler)
-	registerHandler("/", printReqHandler)
+	registerHandler("/sign_in", commonHeaderMiddleware(http.HandlerFunc(signinHandler)))
+	registerHandler("/sign_out", commonHeaderMiddleware(http.HandlerFunc(signoutHandler)))
+	registerHandler("/message", commonHeaderMiddleware(http.HandlerFunc(messageHandler)))
+	registerHandler("/wait", commonHeaderMiddleware(http.HandlerFunc(waitHandler)))
+	registerHandler("/", commonHeaderMiddleware(http.HandlerFunc(printReqHandler)))
 
 	// Start listening
 	err := http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
