@@ -1,6 +1,7 @@
 package gosigsrv
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -127,8 +128,8 @@ func TestSignOutOk(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	signInHandler := http.HandlerFunc(signoutHandler)
-	signInHandler.ServeHTTP(rr, req)
+	signoutHandler := http.HandlerFunc(signoutHandler)
+	signoutHandler.ServeHTTP(rr, req)
 
 	if status := rr.Code; status != http.StatusOK {
 		t.Errorf("Recieved wrong status code expected %v, got %v", http.StatusOK, status)
@@ -161,11 +162,132 @@ func TestSignOutFailsWithBadPeerId(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	signInHandler := http.HandlerFunc(signoutHandler)
-	signInHandler.ServeHTTP(rr, req)
+	signoutHandler := http.HandlerFunc(signoutHandler)
+	signoutHandler.ServeHTTP(rr, req)
 
 	if status := rr.Code; status != http.StatusBadRequest {
 		t.Errorf("Recieved wrong status code expected %v, got %v", http.StatusOK, status)
+	}
+}
+
+func TestSendMessage(t *testing.T) {
+	var err error
+	var peerA, peerB string
+	const peerAname string = "client_peerA"
+	const peerBname string = "renderingserver_peerB"
+	peerA, err = signIn(t, peerAname)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	peerB, err = signIn(t, peerBname)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queryParams := make(url.Values)
+	queryParams.Add("peer_id", peerA)
+	queryParams.Add("to", peerB)
+
+	messageBody := bytes.NewReader([]byte("{\"arbitrary\": \"value\"}"))
+
+	req, err := http.NewRequest("POST", "/message?"+queryParams.Encode(), messageBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	messageHandler := http.HandlerFunc(messageHandler)
+	messageHandler.ServeHTTP(rr, req)
+
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("Recieved wrong status code expected %v, got %v", http.StatusOK, status)
+	}
+
+	pragmaValues, pragmaExists := rr.HeaderMap["Pragma"]
+	if !pragmaExists {
+		t.Errorf("Sign in response did not contain Pragma header")
+	}
+
+	var pragma string
+	if len(pragmaValues) > 0 {
+		pragma = pragmaValues[0]
+	}
+
+	if pragma != peerA {
+		t.Errorf("Peer ID (%s) and Pragma value (%s) do not match", peerA, pragma)
+	}
+}
+
+func TestReceieveMessage(t *testing.T) {
+	var err error
+	var peerA, peerB string
+	const peerAname string = "client_peerA"
+	const peerBname string = "renderingserver_peerB"
+	const expectedMessageContent = "{\"arbitrary\": \"value\"}"
+	peerA, err = signIn(t, peerAname)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	peerB, err = signIn(t, peerBname)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queryParams := make(url.Values)
+	queryParams.Add("peer_id", peerA)
+	queryParams.Add("to", peerB)
+
+	messageBody := bytes.NewReader([]byte("{\"arbitrary\": \"value\"}"))
+
+	req, err := http.NewRequest("POST", "/message?"+queryParams.Encode(), messageBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	messageHandler := http.HandlerFunc(messageHandler)
+	messageHandler.ServeHTTP(rr, req)
+
+	if status := rr.Code; status != http.StatusOK {
+		t.Fatalf("Recieved wrong status code expected %v, got %v", http.StatusOK, status)
+	}
+
+	// Get message
+	queryParams = make(url.Values)
+	queryParams.Add("peer_id", peerB)
+
+	req, err = http.NewRequest("GET", "/wait?"+queryParams.Encode(), messageBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr = httptest.NewRecorder()
+	waitHandler := http.HandlerFunc(waitHandler)
+	waitHandler.ServeHTTP(rr, req)
+
+	if status := rr.Code; status != http.StatusOK {
+		t.Fatalf("Recieved wrong status code expected %v, got %v", http.StatusOK, status)
+	}
+
+	responseBodyString := string(rr.Body.Bytes())
+	if responseBodyString != expectedMessageContent {
+		t.Errorf("Message recieved (%s) are different than what was sent (%s)", responseBodyString, expectedMessageContent)
+	}
+
+	pragmaValues, pragmaExists := rr.HeaderMap["Pragma"]
+	if !pragmaExists {
+		t.Errorf("Sign in response did not contain Pragma header")
+	}
+
+	var pragma string
+	if len(pragmaValues) > 0 {
+		pragma = pragmaValues[0]
+	}
+
+	if pragma != peerA {
+		t.Errorf("Peer ID of sender (%s) and Pragma value (%s) do not match", peerA, pragma)
 	}
 }
 
