@@ -24,10 +24,10 @@ type peerInfo struct {
 	Channel chan string
 }
 
-const PEER_ID_PARAM_NAME string = "peer_id"
-const TO_PARAM_NAME string = "to"
+const peerIDParamName string = "peer_id"
+const toParamName string = "to"
 
-const PEER_MESSAGES_BUFFER_SIZE int = 100
+const peerMessageBufferSize int = 100
 
 var peers = make(map[string]peerInfo)
 
@@ -97,7 +97,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 	var peerInfo peerInfo
 	peerInfo.Name = name
-	peerInfo.Channel = make(chan string, PEER_MESSAGES_BUFFER_SIZE)
+	peerInfo.Channel = make(chan string, peerMessageBufferSize)
 
 	// Determine peer type
 	if strings.Index(name, "renderingserver_") == 0 {
@@ -149,7 +149,7 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 	var peerID string
 	// Parse out peers id
 	for k, v := range req.URL.Query() {
-		if k == PEER_ID_PARAM_NAME {
+		if k == peerIDParamName {
 			peerID = v[0]
 		}
 	}
@@ -170,8 +170,8 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 
 	// Parse out from id
 	// Parse out to id
-	peerID, peerExists := req.URL.Query()[PEER_ID_PARAM_NAME]
-	toID, toExists := req.URL.Query()[TO_PARAM_NAME]
+	peerID, peerExists := req.URL.Query()[peerIDParamName]
+	toID, toExists := req.URL.Query()[toParamName]
 
 	if !peerExists || !toExists {
 		http.Error(res, "Missing Peer or To ID", http.StatusBadRequest)
@@ -215,7 +215,7 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 	}
 
 	// Parse out peer id
-	peerID, peerExists := req.URL.Query()[PEER_ID_PARAM_NAME]
+	peerID, peerExists := req.URL.Query()[peerIDParamName]
 
 	if !peerExists {
 		http.Error(res, "Missing Peer ID", http.StatusBadRequest)
