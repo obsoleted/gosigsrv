@@ -90,6 +90,19 @@ func addCommonHeaders(header http.Header, closeConnection bool) {
 	addCorsHeaders(header)
 }
 
+func printStats() {
+	var serverCount int
+	var clientCount int
+	for _, v := range peers {
+		if v.Kind == server {
+			serverCount++
+		} else {
+			clientCount++
+		}
+	}
+	fmt.Printf("TotalPeers: %d, Servers: %d, Clients: %d\n", len(peers), serverCount, clientCount)
+}
+
 func signinHandler(res http.ResponseWriter, req *http.Request) {
 	addCommonHeaders(res.Header(), true)
 
@@ -144,13 +157,18 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 			if len(pInfo.Channel) < cap(pInfo.Channel) {
 				pInfo.Channel <- peerMsg{pInfo.ID, peerInfoString}
 			} else {
+				fmt.Printf("WARNING: Dropped message for peer %s[%s]", pInfo.Name, pInfo.ID)
 				// TODO: Figure out what to do when peeer message buffer fills up
 			}
 		}
 	}
 	res.WriteHeader(http.StatusOK)
-	fmt.Fprintf(res, responseString)
-	// http.Error(res, "Not implemented "+name+" "+uuid.String(), http.statusadd)
+	_, err := fmt.Fprintf(res, responseString)
+	if err != nil {
+		fmt.Printf("ERROR: %v\n", err)
+	}
+	fmt.Printf("sign-in - ClientName: %s, PeerId: %s\n", peerInfo.Name, peerInfo.ID)
+	printStats()
 }
 
 func signoutHandler(res http.ResponseWriter, req *http.Request) {
@@ -166,7 +184,7 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 			peerID = v[0]
 		}
 	}
-	_, exists := peers[peerID]
+	peer, exists := peers[peerID]
 	if !exists {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
@@ -174,6 +192,9 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 	addPragmaHeader(res.Header(), peerID)
 	delete(peers, peerID)
 	res.WriteHeader(http.StatusOK)
+
+	fmt.Printf("sign-out - ClientName: %s, PeerId: %s\n", peer.Name, peer.ID)
+	printStats()
 }
 
 func messageHandler(res http.ResponseWriter, req *http.Request) {
@@ -217,6 +238,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 
 	// Send message to channel for to id
 	res.WriteHeader(http.StatusOK)
+	fmt.Printf("message: %s -> %s: \n\t%s\n", peerID[0], toID[0], requestString)
 }
 
 func waitHandler(res http.ResponseWriter, req *http.Request) {
@@ -242,12 +264,18 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	fmt.Printf("wait: Peer %s[%s] waiting...\n", peerInfo.Name, peerInfo.ID)
 	// Look up message channel for peers id
 	// Wait for message to reply
 	peerMsg := <-peerInfo.Channel
 	addPragmaHeader(res.Header(), peerMsg.FromID)
 	res.WriteHeader(http.StatusOK)
-	fmt.Fprint(res, peerMsg.Message)
+	_, err := fmt.Fprint(res, peerMsg.Message)
+	if err != nil {
+		fmt.Printf("ERROR: %v\n", err)
+	}
+
+	fmt.Printf("wait: Peer %s[%s] recieved message from %s\n%s\n", peerInfo.Name, peerInfo.ID, peerMsg.FromID, peerMsg.Message)
 }
 
 func main() {
@@ -270,7 +298,16 @@ func main() {
 	registerHandler("/", printReqHandler)
 
 	// Start listening
-	http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
+	err := http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
+	if err != nil {
+		fmt.Println("Error:")
+		fmt.Println(err)
+	}
 	fmt.Println()
 	fmt.Println("gosigsrv exiting")
+	if err != nil {
+		os.Exit(2)
+	} else {
+		os.Exit(0)
+	}
 }
