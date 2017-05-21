@@ -18,11 +18,16 @@ const (
 	server
 )
 
+type peerMsg struct {
+	FromID  string
+	Message string
+}
+
 type peerInfo struct {
 	Kind    peerKind
 	Name    string
 	ID      string
-	Channel chan string
+	Channel chan peerMsg
 }
 
 const peerIDParamName string = "peer_id"
@@ -109,7 +114,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 	var peerInfo peerInfo
 	peerInfo.Name = name
-	peerInfo.Channel = make(chan string, peerMessageBufferSize)
+	peerInfo.Channel = make(chan peerMsg, peerMessageBufferSize)
 
 	// Determine peer type
 	if strings.Index(name, "renderingserver_") == 0 {
@@ -138,7 +143,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 			// Also notify these peers that the new one exists
 			if len(pInfo.Channel) < cap(pInfo.Channel) {
-				pInfo.Channel <- peerInfoString
+				pInfo.Channel <- peerMsg{peerInfo.ID, peerInfoString}
 			} else {
 				// TODO: Figure out what to do when peeer message buffer fills up
 			}
@@ -209,7 +214,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Peer is backed up", http.StatusServiceUnavailable)
 		return
 	}
-	to.Channel <- requestString
+	to.Channel <- peerMsg{peerID[0], requestString}
 
 	// Send message to channel for to id
 	res.WriteHeader(http.StatusOK)
@@ -238,14 +243,12 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	addPragmaHeader(res.Header(), peerID[0])
-
 	// Look up message channel for peers id
 	// Wait for message to reply
-	responseString := <-peerInfo.Channel
-
+	peerMsg := <-peerInfo.Channel
+	addPragmaHeader(res.Header(), peerMsg.FromID)
 	res.WriteHeader(http.StatusOK)
-	fmt.Fprint(res, responseString)
+	fmt.Fprint(res, peerMsg.Message)
 }
 
 func main() {
