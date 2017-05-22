@@ -1,4 +1,4 @@
-package gosigsrv
+package main
 
 import (
 	"bytes"

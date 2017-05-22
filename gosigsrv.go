@@ -1,4 +1,4 @@
-package gosigsrv
+package main
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 type peerKind int
@@ -28,6 +29,16 @@ type peerInfo struct {
 	ID            string
 	Channel       chan *peerMsg
 	ConnectedWith string
+	LastContact   time.Time
+	Waiting       bool
+}
+
+func (m peerInfo) DisplayName() string {
+	return fmt.Sprintf("%s@%s[%s]", m.Name, m.ID, m.ConnectedWith)
+}
+
+func (m peerInfo) InfoString() string {
+	return fmt.Sprintf("%s,%s,1", m.Name, m.ID)
 }
 
 const peerIDParamName string = "peer_id"
@@ -132,6 +143,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 	var peerInfo peerInfo
 	peerInfo.Name = name
 	peerInfo.Channel = make(chan *peerMsg, peerMessageBufferSize)
+	peerInfo.LastContact = time.Now().UTC()
 
 	// Determine peer type
 	if strings.Index(name, "renderingserver_") == 0 {
@@ -148,21 +160,21 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 	setPragmaHeader(res.Header(), peerInfo.ID)
 
-	peerInfoString := fmt.Sprintf("%s,%s,1", peerInfo.Name, peerInfo.ID)
+	peerInfoString := peerInfo.InfoString()
 	peerInfoString += fmt.Sprintln()
 	responseString := peerInfoString
 
 	// Return above + current peers (filtered for oppositing type)
 	for pID, pInfo := range peers {
 		if pID != peerInfo.ID && pInfo.Kind != peerInfo.Kind && pInfo.ConnectedWith == "" {
-			responseString += fmt.Sprintf("%s,%s,1", pInfo.Name, pInfo.ID)
+			responseString += pInfo.InfoString()
 			responseString += fmt.Sprintln()
 
 			// Also notify these peers that the new one exists
 			if len(pInfo.Channel) < cap(pInfo.Channel) {
 				pInfo.Channel <- &peerMsg{pInfo.ID, peerInfoString}
 			} else {
-				fmt.Printf("WARNING: Dropped message for peer %s[%s]", pInfo.Name, pInfo.ID)
+				fmt.Printf("WARNING: Dropped message for peer %s", pInfo.DisplayName())
 				// TODO: Figure out what to do when peeer message buffer fills up
 			}
 		}
@@ -172,7 +184,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		fmt.Printf("ERROR: %v\n", err)
 	}
-	fmt.Printf("sign-in - ClientName: %s, PeerId: %s\n", peerInfo.Name, peerInfo.ID)
+	fmt.Printf("sign-in - Peer: %s\n", peerInfo.DisplayName())
 	printStats()
 }
 
@@ -205,7 +217,7 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 	delete(peers, peerID)
 	res.WriteHeader(http.StatusOK)
 
-	fmt.Printf("sign-out - ClientName: %s, PeerId: %s\n", peer.Name, peer.ID)
+	fmt.Printf("sign-out - Peer: %s\n", peer.DisplayName())
 	printStats()
 }
 
@@ -236,13 +248,15 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	from.LastContact = time.Now().UTC()
+
 	if from.ConnectedWith == "" {
-		fmt.Printf("Connecting %s with %s\n", from.ID, to.ID)
+		fmt.Printf("Connecting %s with %s\n", from.DisplayName(), to.DisplayName())
 		from.ConnectedWith = to.ID
 	}
 
 	if to.ConnectedWith == "" {
-		fmt.Printf("Connecting %s with %s\n", to.ID, from.ID)
+		fmt.Printf("Connecting %s with %s\n", to.DisplayName(), from.DisplayName())
 		to.ConnectedWith = from.ID
 	}
 
@@ -267,7 +281,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 
 	// Send message to channel for to id
 	res.WriteHeader(http.StatusOK)
-	fmt.Printf("message: %s -> %s: \n\t%s\n", peerID, toID, requestString)
+	fmt.Printf("message: %s -> %s: \n\t%s\n", from.DisplayName(), to.DisplayName(), requestString)
 }
 
 func waitHandler(res http.ResponseWriter, req *http.Request) {
@@ -293,11 +307,32 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
+	peerInfo.LastContact = time.Now().UTC()
+	peerInfo.Waiting = true
 
-	fmt.Printf("wait: Peer %s[%s] waiting...\n", peerInfo.Name, peerInfo.ID)
+	fmt.Printf("wait: Peer %s waiting...\n", peerInfo.DisplayName())
 	// Look up message channel for peers id
 	// Wait for message to reply
-	peerMsg := <-peerInfo.Channel
+	var peerMsg *peerMsg
+	var cancelled bool
+	select {
+	case peerMsg = <-(peerInfo.Channel):
+	case <-req.Context().Done():
+		cancelled = true
+	}
+	peerInfo.Waiting = false
+	if cancelled {
+		fmt.Printf("Peer (%s) cancelled/closed connection. Terminating wait call.\n", peerInfo.DisplayName())
+		return
+	}
+	if peerMsg == nil {
+		fmt.Printf("Error: nil peerMsg in channel")
+		http.Error(res, "Bad message", http.StatusInternalServerError)
+		return
+	}
+
+	peerInfo.LastContact = time.Now().UTC()
+
 	setPragmaHeader(res.Header(), peerMsg.FromID)
 	res.WriteHeader(http.StatusOK)
 	_, err := fmt.Fprint(res, peerMsg.Message)
@@ -305,7 +340,28 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 		fmt.Printf("ERROR: %v\n", err)
 	}
 
-	fmt.Printf("wait: Peer %s[%s] recieved message from %s\n%s\n", peerInfo.Name, peerInfo.ID, peerMsg.FromID, peerMsg.Message)
+	fmt.Printf("wait: Peer %s recieved message from ID %s\n\t%s\n\n", peerInfo.DisplayName(), peerMsg.FromID, peerMsg.Message)
+}
+
+func peerCleanupRoutine() {
+	tickerChan := time.NewTicker(time.Second * 30).C
+
+	for {
+		<-tickerChan
+		fmt.Printf("Checking for stale peers\n")
+		printStats()
+		for k, v := range peers {
+			if !v.Waiting && (time.Now().UTC().Sub(v.LastContact) > time.Minute*1) {
+				fmt.Printf("Removing stale peer %s\n", v.DisplayName())
+				connectedWithPeer := peers[v.ConnectedWith]
+				if connectedWithPeer != nil {
+					fmt.Printf("Disconnecting peer %s with id %s\n", v.DisplayName(), connectedWithPeer.DisplayName())
+					connectedWithPeer.ConnectedWith = ""
+				}
+				delete(peers, k)
+			}
+		}
+	}
 }
 
 func main() {
@@ -326,6 +382,9 @@ func main() {
 	registerHandler("/message", commonHeaderMiddleware(http.HandlerFunc(messageHandler)))
 	registerHandler("/wait", commonHeaderMiddleware(http.HandlerFunc(waitHandler)))
 	registerHandler("/", commonHeaderMiddleware(http.HandlerFunc(printReqHandler)))
+
+	// Start peer cleenup timer routine
+	go peerCleanupRoutine()
 
 	// Start listening
 	err := http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
