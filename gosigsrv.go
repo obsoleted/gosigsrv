@@ -38,7 +38,7 @@ func (m peerInfo) String() string {
 }
 
 func (m peerInfo) InfoString() string {
-	return fmt.Sprintf("%s,%s,1", m.Name, m.ID)
+	return fmt.Sprintf("%s,%s,1\n", m.Name, m.ID)
 }
 
 const peerIDParamName string = "peer_id"
@@ -95,6 +95,7 @@ func setPragmaHeader(header http.Header, peerID string) {
 	header.Set("Pragma", peerID)
 }
 
+// printStats prints out the current peer count and count by type
 func printStats() {
 	var serverCount int
 	var clientCount int
@@ -108,6 +109,7 @@ func printStats() {
 	fmt.Printf("TotalPeers: %d, Servers: %d, Clients: %d\n", len(peers), serverCount, clientCount)
 }
 
+// commonHeaderMiddleware sets the common headers that all responses seem to require
 func commonHeaderMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		setNoCacheHeader(res.Header())
@@ -118,14 +120,19 @@ func commonHeaderMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// signinHandler handles the sign in requests
+//
+//   It takes the first parameter with no value as the client name
+//   and assigns it the next peer id (just an increasing int for now)
 func signinHandler(res http.ResponseWriter, req *http.Request) {
 
 	if req.Method != "GET" {
 		http.Error(res, "Bad request", http.StatusBadRequest)
 		return
 	}
-	var name string
+
 	// Parse out peer name
+	var name string
 	for k, v := range req.URL.Query() {
 		// Pick the first query param without a value
 		//  e.g. /sign_in?notname=foo&name should pick 'name'
@@ -140,6 +147,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Create and populate new peer info struct
 	var peerInfo peerInfo
 	peerInfo.Name = name
 	peerInfo.Channel = make(chan *peerMsg, peerMessageBufferSize)
@@ -156,19 +164,24 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 	peerInfo.ID = fmt.Sprintf("%d", peerIDCount)
 	peerMutex.Unlock()
 
+	// Add to peer map
+	// TOOD: Guard this with mutex?
 	peers[peerInfo.ID] = &peerInfo
 
-	setPragmaHeader(res.Header(), peerInfo.ID)
-
+	// Build up response string:
+	//   new peer info string
 	peerInfoString := peerInfo.InfoString()
-	peerInfoString += fmt.Sprintln()
 	responseString := peerInfoString
 
-	// Return above + current peers (filtered for oppositing type)
+	//   current peers (filtered for oppositing type and only peers w/o connections
 	for pID, pInfo := range peers {
+		if pInfo == nil {
+			fmt.Printf("ERROR: nil peer found at id %s\n", pID)
+			continue
+		}
+
 		if pID != peerInfo.ID && pInfo.Kind != peerInfo.Kind && pInfo.ConnectedWith == "" {
 			responseString += pInfo.InfoString()
-			responseString += fmt.Sprintln()
 
 			// Also notify these peers that the new one exists
 			if len(pInfo.Channel) < cap(pInfo.Channel) {
@@ -179,7 +192,14 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}
+
+	// Set header to match new peer id
+	setPragmaHeader(res.Header(), peerInfo.ID)
+
+	// Set status code
 	res.WriteHeader(http.StatusOK)
+
+	// Write response content
 	_, err := fmt.Fprintf(res, responseString)
 	if err != nil {
 		fmt.Printf("ERROR: %v\n", err)
@@ -221,6 +241,7 @@ func signoutHandler(res http.ResponseWriter, req *http.Request) {
 	printStats()
 }
 
+// messageHandler handles requests from a peer to send a message to another peer
 func messageHandler(res http.ResponseWriter, req *http.Request) {
 	if req.Method != "POST" {
 		http.Error(res, "Bad request", http.StatusBadRequest)
@@ -247,7 +268,7 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Invalid Peer or To ID", http.StatusBadRequest)
 		return
 	}
-
+	// Update the last time we heard from peer
 	from.LastContact = time.Now().UTC()
 
 	if from.ConnectedWith == "" {
@@ -264,8 +285,10 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		fmt.Printf("WARNING: Peer sending message to recipient outside room\n")
 	}
 
+	// Must set pragma to peer id of sender
 	setPragmaHeader(res.Header(), peerID)
 
+	// Read message data as a string and send it to the recipients channel
 	requestData, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		http.Error(res, err.Error(), http.StatusInternalServerError)
@@ -277,13 +300,16 @@ func messageHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Peer is backed up", http.StatusServiceUnavailable)
 		return
 	}
+	// channel gets message + sender id
 	to.Channel <- &peerMsg{peerID, requestString}
 
-	// Send message to channel for to id
 	res.WriteHeader(http.StatusOK)
 	fmt.Printf("message: %s -> %s: \n\t%s\n", from, to, requestString)
 }
 
+// waitHandler handles requests from clients looking for meesages
+//
+//   Clients seem to use this in a hanging get/polling situation
 func waitHandler(res http.ResponseWriter, req *http.Request) {
 
 	if req.Method != "GET" {
@@ -307,12 +333,15 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Unknown peer", http.StatusBadRequest)
 		return
 	}
+
+	// Update the last time we heard from peer
 	peerInfo.LastContact = time.Now().UTC()
+	// Also set that peer is waiting (so that peer isn't cleaned up)
 	peerInfo.Waiting = true
 
 	fmt.Printf("wait: Peer %s waiting...\n", peerInfo)
-	// Look up message channel for peers id
-	// Wait for message to reply
+
+	// Wait for message (from channel) OR client disconnect
 	var peerMsg *peerMsg
 	var cancelled bool
 	select {
@@ -321,6 +350,7 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 		cancelled = true
 	}
 	peerInfo.Waiting = false
+
 	if cancelled {
 		fmt.Printf("Peer (%s) cancelled/closed connection. Terminating wait call.\n", peerInfo)
 		return
@@ -330,10 +360,13 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, "Bad message", http.StatusInternalServerError)
 		return
 	}
-
+	// It may have been some time since the msg came through so update the time
 	peerInfo.LastContact = time.Now().UTC()
 
+	// Pragma must be set to the message *sender's* id
 	setPragmaHeader(res.Header(), peerMsg.FromID)
+
+	// set status and write out message contant to response
 	res.WriteHeader(http.StatusOK)
 	_, err := fmt.Fprint(res, peerMsg.Message)
 	if err != nil {
@@ -343,6 +376,10 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 	fmt.Printf("wait: Peer %s recieved message from ID %s\n\t%s\n\n", peerInfo, peerMsg.FromID, peerMsg.Message)
 }
 
+// peerCleanupRoutine periodically cleans up stale peers
+//
+//   Currently hardcoded to check every 30 seconds for peers
+//   that haven't contacted the server in a minute or more
 func peerCleanupRoutine() {
 	tickerChan := time.NewTicker(time.Second * 30).C
 
@@ -351,6 +388,10 @@ func peerCleanupRoutine() {
 		fmt.Printf("Checking for stale peers\n")
 		printStats()
 		for k, v := range peers {
+			if v == nil {
+				fmt.Println("ERROR: nil peer in peers!")
+				continue
+			}
 			if !v.Waiting && (time.Now().UTC().Sub(v.LastContact) > time.Minute*1) {
 				fmt.Printf("Removing stale peer %s\n", v)
 				connectedWithPeer := peers[v.ConnectedWith]
