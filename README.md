@@ -19,7 +19,7 @@ This is also more or less my attempt to learn Go. So yeah...
 - Many other caveats
 
 
-## Instalation and running
+## Installation and running
 ```sh
 go get github.com/obsoleted/gosigsrv
 gosigsrv
