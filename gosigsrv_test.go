@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -269,6 +270,15 @@ func TestReceieveMessage(t *testing.T) {
 
 	if status := rr.Code; status != http.StatusOK {
 		t.Fatalf("Recieved wrong status code expected %v, got %v", http.StatusOK, status)
+	}
+
+	contentLength, converr := strconv.Atoi(rr.Header().Get("Content-Length"))
+	if converr != nil {
+		t.Errorf("Content length could not be cast to int")
+	}
+
+	if contentLength != rr.Body.Len() {
+		t.Errorf("Content length header (%d) did not match actual content length (%d)", contentLength, rr.Body.Len())
 	}
 
 	responseBodyString := string(rr.Body.Bytes())

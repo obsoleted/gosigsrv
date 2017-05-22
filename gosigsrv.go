@@ -196,6 +196,7 @@ func signinHandler(res http.ResponseWriter, req *http.Request) {
 	// Set header to match new peer id
 	setPragmaHeader(res.Header(), peerInfo.ID)
 
+	res.Header().Set("Content-Length", fmt.Sprintf("%d", len(responseString)))
 	// Set status code
 	res.WriteHeader(http.StatusOK)
 
@@ -363,6 +364,7 @@ func waitHandler(res http.ResponseWriter, req *http.Request) {
 	// It may have been some time since the msg came through so update the time
 	peerInfo.LastContact = time.Now().UTC()
 
+	res.Header().Set("Content-Length", fmt.Sprintf("%d", len(peerMsg.Message)))
 	// Pragma must be set to the message *sender's* id
 	setPragmaHeader(res.Header(), peerMsg.FromID)
 
